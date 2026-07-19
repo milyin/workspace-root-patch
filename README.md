@@ -1,34 +1,74 @@
 # project-root-patch
 
-A tiny utility crate that, when built inside a Cargo workspace, discovers the workspace root.
+Make the consuming Cargo workspace's root available to an external crate's
+`build.rs`.
 
-## Relation to `project-root`
+## How it works
 
-[`project-root`](https://crates.io/crates/project-root) is the upstream crate
-used by this package's `build.rs`. It can discover the workspace that contains
-the crate currently being built.
+An external crate declares a normal dependency on `project-root-patch` and
+calls this API from its `build.rs`:
 
-`project-root-patch` solves the additional placement problem: an ordinary
-crates.io dependency is built from Cargo's cache, so `project-root` would find
-the cache rather than the consuming project's workspace. The
-`cargo project-root-patch install` command copies this helper into the
-destination workspace and adds a Cargo patch. Once built from that local copy,
-the helper uses `project-root` to discover—and exposes—the destination
-workspace root to its dependents.
+```rust
+let project_root = project_root_patch::get_project_root();
+```
 
-The main purpose of this tool is to allow a crate installed from crates.io (i.e., not part of the workspace)
-to find the workspace's `Cargo.lock` at compile time. A simple call to the well-known
-`project_root::get_project_root()` doesn't work here because it searches upward from the current working
-directory, which during a build is inside `$HOME/.cargo` rather than your workspace.
+By default, Cargo builds the `project-root-patch` dependency from its registry
+cache. In that mode, `project_root_patch::get_project_root()` panics with setup
+instructions because it cannot determine the consuming workspace.
 
-This crate solves the problem by injecting itself into the user's workspace via the `[patch]` section.
-That is, the workspace contains a copy of the `project-root-patch` crate which, being inside the
-workspace, can determine the workspace root. Any crate that depends on `project-root-patch` will then
-use the copy from the user's workspace instead of the one in `$HOME/.cargo`.
-
-The Cargo subcommand `project-root-patch` automates this injection. Run:
+To make the function return the consuming workspace's root, run this command
+from that workspace's root directory:
 
 ```sh
-cargo install project-root-patch
 cargo project-root-patch install .
 ```
+
+The command:
+
+1. Creates `<workspace>/project-root-patch/`, a local non-published helper
+   package with the same package name and the `project_root_patch` library API.
+2. Adds that directory as a workspace member.
+3. Adds this override to the workspace manifest:
+
+   ```toml
+   [patch.crates-io]
+   project-root-patch = { path = "project-root-patch" }
+   ```
+
+Cargo applies the patch across the dependency graph. Therefore the external
+crate's `project_root_patch::get_project_root()` call is compiled from the
+injected local helper, rather than from the registry dependency. That helper's
+`build.rs` calls the upstream [`project-root`](https://crates.io/crates/project-root)
+crate while it is inside the consuming workspace, so it can record the real
+workspace root.
+
+## Example: lockfile-accurate model builds
+
+An external crate may need to run Cargo internally to collect type layout data,
+such as structure sizes and alignments. It must use the same `Cargo.lock` as
+the consuming workspace; otherwise the nested build can resolve different
+dependencies and report the wrong layouts. The external crate's `build.rs` can
+obtain that lockfile with:
+
+```rust
+let lockfile = project_root_patch::get_project_root().join("Cargo.lock");
+```
+
+## Set up a workspace
+
+1. Install the Cargo subcommand. Until the package is published, install it
+   directly from this repository:
+
+   ```sh
+   cargo install --git https://github.com/milyin/project-root-patch project-root-patch
+   ```
+
+2. From the root of the workspace that needs this capability, install the
+   local helper:
+
+   ```sh
+   cargo project-root-patch install .
+   ```
+
+3. Build the workspace normally. Every dependency on `project-root-patch`
+   resolves to the local helper through the patch.

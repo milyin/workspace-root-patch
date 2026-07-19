@@ -1,3 +1,3 @@
 fn main() {
-    println!("{}", prebindgen_project_root::get_project_root().display());
+    println!("{}", workspace_root_patch::get_project_root().display());
 }

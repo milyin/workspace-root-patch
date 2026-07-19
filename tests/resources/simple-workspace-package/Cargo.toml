@@ -6,5 +6,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# prebindgen-project-root = { path = "../../.." }
-prebindgen-project-root = "*"
+# workspace-root-patch = { path = "../../.." }
+workspace-root-patch = "*"

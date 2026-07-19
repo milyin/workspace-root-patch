@@ -16,7 +16,7 @@ fn main() {
 
     if manifest_dir.starts_with(cargo_home) {
         println!("cargo:rustc-env=PROJECT_ROOT=");
-        println!("cargo:warning=prebindgen-project-root is not located inside your workspace");
+        println!("cargo:warning=workspace-root-patch is not located inside your workspace");
     } else {
         let workspace_root = project_root::get_project_root()
             .unwrap_or_else(|e| panic!("Failed to determine workspace root: {}", e));

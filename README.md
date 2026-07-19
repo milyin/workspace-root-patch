@@ -1,4 +1,4 @@
-# prebindgen-project-root
+# workspace-root-patch
 
 A tiny utility crate that, when built inside a Cargo workspace, discovers the workspace root.
 
@@ -8,13 +8,13 @@ to find the workspace's `Cargo.lock` at compile time. A simple call to the well-
 directory, which during a build is inside `$HOME/.cargo` rather than your workspace.
 
 This crate solves the problem by injecting itself into the user's workspace via the `[patch]` section.
-That is, the workspace contains a copy of the `prebindgen-project-root` crate which, being inside the
-workspace, can determine the workspace root. Any crate that depends on `prebindgen-project-root` will then
+That is, the workspace contains a copy of the `workspace-root-patch` crate which, being inside the
+workspace, can determine the workspace root. Any crate that depends on `workspace-root-patch` will then
 use the copy from the user's workspace instead of the one in `$HOME/.cargo`.
 
-The Cargo subcommand `prebindgen-project-root` automates this injection. Run:
+The Cargo subcommand `workspace-root-patch` automates this injection. Run:
 
 ```sh
-cargo install prebindgen-project-root
-cargo prebindgen-project-root install .
+cargo install workspace-root-patch
+cargo workspace-root-patch install .
 ```

@@ -6,21 +6,21 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
-const USAGE: &str = "workspace-root-patch
+const USAGE: &str = "project-root-patch
 
 Usage:
-    cargo workspace-root-patch install <path>
+    cargo project-root-patch install <path>
 
 Commands:
     help                 Show this help.
-    install <path>       Install a local copy of workspace-root-patch into the given Cargo workspace.
+    install <path>       Install a local copy of project-root-patch into the given Cargo workspace.
 
 Details:
     - <path> may be either a path to a workspace root directory (containing Cargo.toml with [workspace])
         or a path directly to that workspace's Cargo.toml file.
     - This will:
-            * add a new member crate named 'workspace-root-patch' inside the workspace
-            * add a [patch.crates-io] entry that points workspace-root-patch to the local path
+            * add a new member crate named 'project-root-patch' inside the workspace
+            * add a [patch.crates-io] entry that points project-root-patch to the local path
 ";
 
 fn main() {
@@ -37,7 +37,7 @@ fn real_main() -> Result<()> {
     // When invoked as a Cargo subcommand, Cargo may pass the subcommand name
     // as the first argument. Accept and skip both binary names just in case.
     if let Some(first) = args.first().map(|s| s.as_str()) {
-        if matches!(first, "workspace-root-patch" | "cargo-workspace-root-patch") {
+        if matches!(first, "project-root-patch" | "cargo-project-root-patch") {
             let _ = args.remove(0);
         }
     }
@@ -68,7 +68,7 @@ fn install(input: &Path) -> Result<()> {
     let (ws_root, ws_manifest_path) = resolve_workspace_root_and_manifest_or_create(input)?;
 
     // 1) Ensure destination crate directory
-    let local_crate_dir = ws_root.join("workspace-root-patch");
+    let local_crate_dir = ws_root.join("project-root-patch");
     if local_crate_dir.exists() {
         // If exists, ensure it's a directory and has src/. If not, bail to avoid clobbering.
         if !local_crate_dir.is_dir() {
@@ -89,7 +89,7 @@ fn install(input: &Path) -> Result<()> {
         let version = env!("CARGO_PKG_VERSION");
         let cargo_toml = format!(
             r#"[package]
-name = "workspace-root-patch"
+name = "project-root-patch"
 version = "{version}"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -119,7 +119,7 @@ quote = "1"
     add_member_and_patch(&ws_manifest_path, &local_crate_dir)?;
 
     println!(
-        "Installed local 'workspace-root-patch' crate at: {}\nUpdated workspace at: {}",
+        "Installed local 'project-root-patch' crate at: {}\nUpdated workspace at: {}",
         local_crate_dir.display(),
         ws_manifest_path.display()
     );
@@ -242,21 +242,19 @@ fn add_member_and_patch(ws_manifest_path: &Path, local_crate_dir: &Path) -> Resu
     let ws = doc["workspace"].or_insert(Item::Table(Table::new()));
     let ws_tbl = ws.as_table_mut().expect("workspace to be a table");
 
-    // Ensure members array includes "workspace-root-patch"
+    // Ensure members array includes "project-root-patch"
     let members = ws_tbl
         .entry("members")
         .or_insert(Item::Value(Value::Array(Array::default())));
     if let Some(arr) = members.as_array_mut() {
-        let exists = arr
-            .iter()
-            .any(|v| v.as_str() == Some("workspace-root-patch"));
+        let exists = arr.iter().any(|v| v.as_str() == Some("project-root-patch"));
         if !exists {
-            arr.push("workspace-root-patch");
+            arr.push("project-root-patch");
         }
     } else {
         // Replace with array if not array
         let mut arr = Array::default();
-        arr.push("workspace-root-patch");
+        arr.push("project-root-patch");
         ws_tbl["members"] = Item::Value(Value::Array(arr));
     }
 
@@ -272,10 +270,10 @@ fn add_member_and_patch(ws_manifest_path: &Path, local_crate_dir: &Path) -> Resu
         .unwrap_or_else(|| local_crate_dir.to_path_buf());
     let rel_str = rel_path.to_string_lossy().replace('\\', "/");
 
-    // workspace-root-patch = { path = "..." }
+    // project-root-patch = { path = "..." }
     let mut path_table = Table::new();
     path_table.insert("path", toml_edit::value(rel_str));
-    crates_io_tbl.insert("workspace-root-patch", Item::Table(path_table));
+    crates_io_tbl.insert("project-root-patch", Item::Table(path_table));
 
     // Write back
     text = doc.to_string();

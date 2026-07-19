@@ -1,19 +1,19 @@
 [package]
-name = "workspace-root-patch"
+name = "project-root-patch"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Michael Ilyin <milyin@gmail.com>"]
 repository = "https://github.com/milyin/project-root-patch"
 description = "Patch a Cargo workspace with a local crate that exposes its root at build time"
-documentation = "https://docs.rs/workspace-root-patch"
+documentation = "https://docs.rs/project-root-patch"
 keywords = ["cargo", "workspace", "build"]
 categories = ["development-tools::cargo-plugins"]
 rust-version = "1.85"
 readme = "README.md"
 
 [lib]
-name = "workspace_root_patch"
+name = "project_root_patch"
 path = "src/lib.rs"
 
 [build-dependencies]
@@ -26,7 +26,7 @@ toml_edit = { version = "0.22", features = ["serde"] }
 pathdiff = "0.2"
 
 [[bin]]
-name = "cargo-workspace-root-patch"
+name = "cargo-project-root-patch"
 path = "src/main.rs"
 
 [package.metadata.docs.rs]

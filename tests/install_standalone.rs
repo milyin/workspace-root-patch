@@ -9,7 +9,7 @@ use tempfile::{Builder as TempDirBuilder, TempDir};
 use toml_edit::DocumentMut;
 
 fn crate_root() -> PathBuf {
-    // This test file is in the workspace-root-patch crate
+    // This test file is in the project-root-patch crate
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
@@ -57,7 +57,7 @@ fn copy_fixture(tmp_root: &Path, fixture: &str) -> PathBuf {
 }
 
 fn run_install(manifest: &Path) {
-    let bin = cargo_bin("cargo-workspace-root-patch");
+    let bin = cargo_bin("cargo-project-root-patch");
     Command::new(bin)
         .arg("install")
         .arg(manifest)
@@ -92,7 +92,7 @@ fn assert_helper_patch(doc: &DocumentMut) {
         .as_table()
         .expect("patch.crates-io table");
     let helper = patch_tbl
-        .get("workspace-root-patch")
+        .get("project-root-patch")
         .expect("patch entry for helper crate");
     let helper_tbl = helper.as_table().expect("helper patch table");
     let path_value = helper_tbl
@@ -100,17 +100,17 @@ fn assert_helper_patch(doc: &DocumentMut) {
         .and_then(|i| i.as_str())
         .expect("path value");
     eprintln!(
-        "[test] patch crates-io.workspace-root-patch.path = {}",
+        "[test] patch crates-io.project-root-patch.path = {}",
         path_value
     );
     assert!(
-        path_value.contains("workspace-root-patch"),
-        "path should reference 'workspace-root-patch'"
+        path_value.contains("project-root-patch"),
+        "path should reference 'project-root-patch'"
     );
 }
 
 fn assert_helper_files_exist(base_dir: &Path) {
-    let local_helper_dir = base_dir.join("workspace-root-patch");
+    let local_helper_dir = base_dir.join("project-root-patch");
     eprintln!(
         "[test] installed helper dir: {}",
         local_helper_dir.display()
@@ -180,7 +180,7 @@ fn installs_into_standalone_crate_from_resources() {
     run_install(&manifest);
 
     let doc: DocumentMut = read_manifest_doc(&manifest);
-    assert_workspace_members(&doc, &[".", "workspace-root-patch"]);
+    assert_workspace_members(&doc, &[".", "project-root-patch"]);
     assert_helper_patch(&doc);
     assert_helper_files_exist(&dst_pkg);
 
@@ -199,7 +199,7 @@ fn installs_into_existing_workspace_from_resources() {
     run_install(&ws_manifest);
 
     let doc: DocumentMut = read_manifest_doc(&ws_manifest);
-    assert_workspace_members(&doc, &["simple-member", "workspace-root-patch"]);
+    assert_workspace_members(&doc, &["simple-member", "project-root-patch"]);
     assert_helper_patch(&doc);
     assert_helper_files_exist(&dst_ws);
 
@@ -220,7 +220,7 @@ fn installs_into_simple_workspace_root_from_resources() {
 
     let doc: DocumentMut = read_manifest_doc(&ws_manifest);
     // Expect the helper crate to be added as a workspace member
-    assert_workspace_members(&doc, &["workspace-root-patch"]);
+    assert_workspace_members(&doc, &["project-root-patch"]);
     assert_helper_patch(&doc);
     assert_helper_files_exist(&dst_ws);
 

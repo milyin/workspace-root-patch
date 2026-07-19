@@ -1,3 +1,3 @@
 fn main() {
-    println!("{}", workspace_root_patch::get_project_root().display());
+    println!("{}", project_root_patch::get_project_root().display());
 }

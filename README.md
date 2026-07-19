@@ -1,74 +1,82 @@
 # project-root-patch
 
-Make the consuming Cargo workspace's root available to an external crate's
-`build.rs`.
+[![CI](https://github.com/milyin/project-root-patch/actions/workflows/ci.yml/badge.svg)](https://github.com/milyin/project-root-patch/actions/workflows/ci.yml)
 
-## How it works
+Expose the consuming Cargo workspace's root to an external crate's `build.rs`.
 
-An external crate declares a normal dependency on `project-root-patch` and
-calls this API from its `build.rs`:
+## External crate
 
-```rust
-let project_root = project_root_patch::get_project_root();
+Add the library as a build dependency:
+
+```toml
+[build-dependencies]
+project-root-patch = "0.1"
 ```
 
-By default, Cargo builds the `project-root-patch` dependency from its registry
-cache. In that mode, `project_root_patch::get_project_root()` panics with setup
-instructions because it cannot determine the consuming workspace.
+The external crate can then locate files owned by the consuming workspace:
 
-To make the function return the consuming workspace's root, run this command
-from that workspace's root directory:
-
-```sh
-cargo project-root-patch install .
+```rust,no_run
+let workspace_root = project_root_patch::get_project_root();
+let lockfile = workspace_root.join("Cargo.lock");
 ```
 
-The command:
+Without the workspace setup below, `get_project_root()` panics with an
+explanatory message. Cargo normally builds `project-root-patch` from its
+registry cache, which is outside the consuming workspace and cannot identify
+that workspace.
 
-1. Creates `<workspace>/project-root-patch/`, a local non-published helper
-   package with the same package name and the `project_root_patch` library API.
-2. Adds that directory as a workspace member.
-3. Adds this override to the workspace manifest:
+One use case is a build script that runs a nested model build to inspect type
+sizes and alignments. Using the consuming workspace's `Cargo.lock` ensures that
+the model build resolves exactly the same dependency versions.
 
-   ```toml
-   [patch.crates-io]
-   project-root-patch = { path = "project-root-patch" }
-   ```
+## Consuming workspace
 
-Cargo applies the patch across the dependency graph. Therefore the external
-crate's `project_root_patch::get_project_root()` call is compiled from the
-injected local helper, rather than from the registry dependency. That helper's
-`build.rs` calls the upstream [`project-root`](https://crates.io/crates/project-root)
-crate while it is inside the consuming workspace, so it can record the real
-workspace root.
-
-## Example: lockfile-accurate model builds
-
-An external crate may need to run Cargo internally to collect type layout data,
-such as structure sizes and alignments. It must use the same `Cargo.lock` as
-the consuming workspace; otherwise the nested build can resolve different
-dependencies and report the wrong layouts. The external crate's `build.rs` can
-obtain that lockfile with:
-
-```rust
-let lockfile = project_root_patch::get_project_root().join("Cargo.lock");
-```
-
-## Set up a workspace
-
-1. Install the Cargo subcommand. Until the package is published, install it
-   directly from this repository:
+1. Install the Cargo subcommand:
 
    ```sh
-   cargo install --git https://github.com/milyin/project-root-patch project-root-patch
+   cargo install project-root-patch --version 0.1.0 --locked
    ```
 
-2. From the root of the workspace that needs this capability, install the
-   local helper:
+2. From the workspace root, inject the local helper:
 
    ```sh
    cargo project-root-patch install .
    ```
 
-3. Build the workspace normally. Every dependency on `project-root-patch`
-   resolves to the local helper through the patch.
+   A path to the workspace's `Cargo.toml` can be used instead of `.`. Passing a
+   standalone package creates a workspace in that package's manifest.
+
+3. Review and commit the generated `project-root-patch/` directory and the
+   workspace manifest changes. Then build the workspace normally.
+
+The installed CLI version must satisfy the external crate's
+`project-root-patch` version requirement. Re-run the command after updating the
+CLI so that it refreshes the generated helper.
+
+## How the patch works
+
+The command creates `<workspace>/project-root-patch/`, adds it as a workspace
+member, and adds the following source override:
+
+```toml
+[patch.crates-io]
+project-root-patch = { path = "project-root-patch" }
+```
+
+Cargo therefore compiles the external crate's
+`project_root_patch::get_project_root()` call against the injected package, not
+the registry package. The injected package has the same library API. Its
+`build.rs` calls [`project-root`](https://crates.io/crates/project-root) while
+located inside the consuming workspace and records the root found from that
+workspace's `Cargo.lock`.
+
+The override applies to dependencies from crates.io. A dependency obtained
+from another source requires a patch for that source instead.
+
+## Maintainers
+
+See [RELEASING.md](RELEASING.md) for the CI publication procedure.
+
+## License
+
+Licensed under either Apache-2.0 or MIT, at your option.

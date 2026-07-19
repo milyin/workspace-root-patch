@@ -5,36 +5,12 @@ use std::{
 };
 
 use assert_cmd::{cargo::cargo_bin, prelude::*};
+use predicates::prelude::*;
 use tempfile::{Builder as TempDirBuilder, TempDir};
 use toml_edit::DocumentMut;
 
-fn crate_root() -> PathBuf {
-    // This test file is in the project-root-patch crate
-    Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
-}
-
-fn tests_resources_dir() -> PathBuf {
-    crate_root().join("tests").join("resources")
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&from, &to)?;
-        } else if ty.is_file() {
-            fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
-}
-
 fn keep_tmp_enabled() -> bool {
-    env::var("PREBINDGEN_KEEP_TMP")
+    env::var("PROJECT_ROOT_PATCH_KEEP_TMP")
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false)
 }
@@ -42,18 +18,81 @@ fn keep_tmp_enabled() -> bool {
 fn make_tmp(prefix: &str) -> (TempDir, PathBuf) {
     let tmp = TempDirBuilder::new()
         .prefix(prefix)
-        .tempdir_in(Path::new("/tmp"))
-        .expect("tempdir in /tmp");
+        .tempdir()
+        .expect("create tempdir");
     let tmp_path = tmp.path().to_path_buf();
     (tmp, tmp_path)
 }
 
-fn copy_fixture(tmp_root: &Path, fixture: &str) -> PathBuf {
-    let src = tests_resources_dir().join(fixture);
-    let dst = tmp_root.join(fixture);
-    copy_dir_all(&src, &dst).expect("copy fixture");
-    eprintln!("[test] {} copied to: {}", fixture, dst.display());
-    dst
+fn create_fixture(tmp_root: &Path, fixture: &str) -> PathBuf {
+    let root = tmp_root.join(fixture);
+    let program = r#"fn main() {
+    println!("{}", project_root_patch::get_project_root().display());
+}
+"#;
+
+    match fixture {
+        "simple-package" => {
+            fs::create_dir_all(root.join("src")).expect("create package source directory");
+            fs::write(
+                root.join("Cargo.toml"),
+                r#"[package]
+name = "simple_pkg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+project-root-patch = "*"
+"#,
+            )
+            .expect("write package manifest");
+            fs::write(root.join("src/main.rs"), program).expect("write package source");
+        }
+        "simple-workspace-package" => {
+            fs::create_dir_all(root.join("src")).expect("create package source directory");
+            fs::write(
+                root.join("Cargo.toml"),
+                r#"[workspace]
+
+[package]
+name = "simple_pkg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+project-root-patch = "*"
+"#,
+            )
+            .expect("write workspace package manifest");
+            fs::write(root.join("src/main.rs"), program).expect("write package source");
+        }
+        "workspace-package" => {
+            let member = root.join("simple-member");
+            fs::create_dir_all(member.join("src")).expect("create member source directory");
+            fs::write(
+                root.join("Cargo.toml"),
+                "[workspace]\nmembers = [\"simple-member\"]\n",
+            )
+            .expect("write workspace manifest");
+            fs::write(
+                member.join("Cargo.toml"),
+                r#"[package]
+name = "simple_member"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+project-root-patch = "*"
+"#,
+            )
+            .expect("write member manifest");
+            fs::write(member.join("src/main.rs"), program).expect("write member source");
+        }
+        other => panic!("unknown fixture: {other}"),
+    }
+
+    eprintln!("[test] {fixture} created at: {}", root.display());
+    root
 }
 
 fn run_install(manifest: &Path) {
@@ -123,6 +162,12 @@ fn assert_helper_files_exist(base_dir: &Path) {
         local_helper_dir.join("build.rs").exists(),
         "build.rs should exist"
     );
+    assert!(
+        local_helper_dir
+            .join(".project-root-patch-generated")
+            .exists(),
+        "generated marker should exist"
+    );
 }
 
 fn maybe_keep_tmp(tmp: TempDir) {
@@ -141,7 +186,7 @@ fn cargo_run_and_assert_workspace(dir: &Path, pkg: Option<&str>) {
     );
 
     let mut cmd = Command::new("cargo");
-    cmd.arg("run").arg("--quiet");
+    cmd.arg("run").arg("--quiet").arg("--offline");
     if let Some(p) = pkg {
         cmd.arg("-p").arg(p);
     }
@@ -172,12 +217,12 @@ fn cargo_run_and_assert_workspace(dir: &Path, pkg: Option<&str>) {
 }
 
 #[test]
-fn installs_into_standalone_crate_from_resources() {
-    let (tmp, tmp_root) = make_tmp("prebindgen-test-");
-    let dst_pkg = copy_fixture(&tmp_root, "simple-package");
+fn installs_into_standalone_crate() {
+    let (tmp, tmp_root) = make_tmp("project-root-patch-test-");
+    let dst_pkg = create_fixture(&tmp_root, "simple-package");
     let manifest = dst_pkg.join("Cargo.toml");
 
-    run_install(&manifest);
+    run_install(&dst_pkg);
 
     let doc: DocumentMut = read_manifest_doc(&manifest);
     assert_workspace_members(&doc, &[".", "project-root-patch"]);
@@ -191,9 +236,73 @@ fn installs_into_standalone_crate_from_resources() {
 }
 
 #[test]
-fn installs_into_existing_workspace_from_resources() {
-    let (tmp, tmp_root) = make_tmp("prebindgen-test-");
-    let dst_ws = copy_fixture(&tmp_root, "workspace-package");
+fn reinstall_is_idempotent() {
+    let (tmp, tmp_root) = make_tmp("project-root-patch-test-");
+    let dst_pkg = create_fixture(&tmp_root, "simple-package");
+    let manifest = dst_pkg.join("Cargo.toml");
+
+    run_install(&manifest);
+    run_install(&manifest);
+
+    let doc = read_manifest_doc(&manifest);
+    let members = doc["workspace"]["members"]
+        .as_array()
+        .expect("members array");
+    assert_eq!(
+        members
+            .iter()
+            .filter(|value| value.as_str() == Some("project-root-patch"))
+            .count(),
+        1
+    );
+    assert_helper_patch(&doc);
+    cargo_run_and_assert_workspace(&dst_pkg, None);
+
+    maybe_keep_tmp(tmp);
+}
+
+#[test]
+fn refuses_to_overwrite_an_unrecognized_directory() {
+    let (tmp, tmp_root) = make_tmp("project-root-patch-test-");
+    let dst_pkg = create_fixture(&tmp_root, "simple-package");
+    let local_helper = dst_pkg.join("project-root-patch");
+    fs::create_dir(&local_helper).expect("create unrecognized directory");
+    fs::write(local_helper.join("keep.txt"), "user data").expect("write user data");
+
+    Command::new(cargo_bin("cargo-project-root-patch"))
+        .arg("install")
+        .arg(&dst_pkg)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "refusing to overwrite unrecognized directory",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(local_helper.join("keep.txt")).expect("read user data"),
+        "user data"
+    );
+    let doc = read_manifest_doc(&dst_pkg.join("Cargo.toml"));
+    assert!(!doc.contains_key("workspace"));
+
+    maybe_keep_tmp(tmp);
+}
+
+#[test]
+fn rejects_extra_install_arguments() {
+    Command::new(cargo_bin("cargo-project-root-patch"))
+        .args(["install", ".", "unexpected"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "install requires exactly one <path>",
+        ));
+}
+
+#[test]
+fn installs_into_existing_workspace() {
+    let (tmp, tmp_root) = make_tmp("project-root-patch-test-");
+    let dst_ws = create_fixture(&tmp_root, "workspace-package");
     let ws_manifest = dst_ws.join("Cargo.toml");
 
     run_install(&ws_manifest);
@@ -210,10 +319,10 @@ fn installs_into_existing_workspace_from_resources() {
 }
 
 #[test]
-fn installs_into_simple_workspace_root_from_resources() {
+fn installs_into_simple_workspace_root() {
     // Workspace with [workspace] in the root manifest and a root package
-    let (tmp, tmp_root) = make_tmp("prebindgen-test-");
-    let dst_ws = copy_fixture(&tmp_root, "simple-workspace-package");
+    let (tmp, tmp_root) = make_tmp("project-root-patch-test-");
+    let dst_ws = create_fixture(&tmp_root, "simple-workspace-package");
     let ws_manifest = dst_ws.join("Cargo.toml");
 
     run_install(&ws_manifest);

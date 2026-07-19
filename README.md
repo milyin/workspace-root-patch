@@ -19,10 +19,16 @@ instructions because it cannot determine the consuming workspace.
 To make the function return the consuming workspace's root, run this command
 from that workspace's root directory:
 
-1. It creates `<workspace>/project-root-patch/`, a local non-published helper
+```sh
+cargo project-root-patch install .
+```
+
+The command:
+
+1. Creates `<workspace>/project-root-patch/`, a local non-published helper
    package with the same package name and the `project_root_patch` library API.
-2. It adds that directory as a workspace member.
-3. It adds this override to the workspace manifest:
+2. Adds that directory as a workspace member.
+3. Adds this override to the workspace manifest:
 
    ```toml
    [patch.crates-io]
@@ -34,8 +40,7 @@ crate's `project_root_patch::get_project_root()` call is compiled from the
 injected local helper, rather than from the registry dependency. That helper's
 `build.rs` calls the upstream [`project-root`](https://crates.io/crates/project-root)
 crate while it is inside the consuming workspace, so it can record the real
-workspace root. If the patch is absent, `get_project_root()` panics with setup
-instructions rather than returning a Cargo-cache path.
+workspace root.
 
 ## Example: lockfile-accurate model builds
 

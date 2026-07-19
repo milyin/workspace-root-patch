@@ -1,21 +1,34 @@
 # project-root-patch
 
-Expose the consuming Cargo workspace's absolute root path to a build-time Rust
-dependency.
+Make the consuming Cargo workspace's root available to an external crate's
+`build.rs`.
 
 ## Why this exists
 
-[`project-root`](https://crates.io/crates/project-root) discovers the workspace
-that contains the crate being built. That is useful, and
-`project-root-patch` uses it internally.
+[`project-root`](https://crates.io/crates/project-root) is called by the
+`build.rs` of a crate that belongs to a workspace. In that situation it can
+discover that workspace's root.
 
-The catch is placement: a normal crates.io dependency is built from Cargo's
-cache, outside the consuming workspace. Calling `project-root` there therefore
-finds the cache, not the project that depends on it.
+That does not directly help an external crate from crates.io: its sources are
+built from Cargo's cache, outside the consuming workspace. Its `build.rs` may
+still need reflection on that workspace—for example, its `Cargo.lock`.
 
-`project-root-patch` copies a small helper crate into the consuming workspace
-and adds a Cargo patch for it. The helper is then built *inside* that workspace,
-where `project-root` can discover the intended root.
+`project-root-patch` installs a small helper crate into the consuming workspace
+and patches dependencies to use it. The helper's `build.rs` calls
+`project-root`, records the workspace root, and exposes it through
+`project_root_patch::get_project_root()` to external dependents.
+
+## Example: lockfile-accurate model builds
+
+An external crate may need to run Cargo internally to collect type layout data,
+such as structure sizes and alignments. It must use the same `Cargo.lock` as
+the consuming workspace; otherwise the nested build can resolve different
+dependencies and report the wrong layouts. The external crate's `build.rs` can
+obtain that lockfile with:
+
+```rust
+let lockfile = project_root_patch::get_project_root().join("Cargo.lock");
+```
 
 ## Set up a workspace
 
@@ -34,8 +47,8 @@ where `project-root` can discover the intended root.
    ```
 
    The command creates a `project-root-patch/` member and adds a
-   `[patch.crates-io]` entry. It does not modify the dependency that needs the
-   root path.
+   `[patch.crates-io]` entry. It does not modify the external crate that needs
+   the root path.
 
 3. Build the workspace normally. Every dependency on `project-root-patch`
    resolves to the local helper through the patch.
@@ -46,8 +59,8 @@ Add `project-root-patch` as a build dependency of the crate that needs the
 path, then call its library API:
 
 ```rust
-let workspace_root = project_root_patch::get_project_root();
-let lockfile = workspace_root.join("Cargo.lock");
+let project_root = project_root_patch::get_project_root();
+let lockfile = project_root.join("Cargo.lock");
 ```
 
 `get_project_root()` panics with setup instructions when the helper was not

@@ -13,7 +13,7 @@ rust-version = "1.85"
 readme = "README.md"
 
 [lib]
-name = "workspace_root"
+name = "workspace_root_patch"
 path = "src/lib.rs"
 
 [build-dependencies]

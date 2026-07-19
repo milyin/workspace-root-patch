@@ -15,14 +15,11 @@ fn main() {
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
 
     if manifest_dir.starts_with(cargo_home) {
-        println!("cargo:rustc-env=WORKSPACE_ROOT=");
+        println!("cargo:rustc-env=PROJECT_ROOT=");
         println!("cargo:warning=workspace-root-patch is not located inside your workspace");
     } else {
         let workspace_root = project_root::get_project_root()
             .unwrap_or_else(|e| panic!("Failed to determine workspace root: {}", e));
-        println!(
-            "cargo:rustc-env=WORKSPACE_ROOT={}",
-            workspace_root.display()
-        );
+        println!("cargo:rustc-env=PROJECT_ROOT={}", workspace_root.display());
     }
 }

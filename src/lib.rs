@@ -19,10 +19,10 @@ const NOT_IN_WORKSPACE: &str =
 /// (unpatched) dependency it cannot see the destination workspace, so it
 /// **panics** rather than returning a wrong or empty path that a caller might
 /// silently accept.
-pub fn get_workspace_root() -> PathBuf {
-    let workspace_root = env!("WORKSPACE_ROOT");
-    if workspace_root.is_empty() {
+pub fn get_project_root() -> PathBuf {
+    let project_root = env!("PROJECT_ROOT");
+    if project_root.is_empty() {
         panic!("{NOT_IN_WORKSPACE}");
     }
-    workspace_root.into()
+    project_root.into()
 }

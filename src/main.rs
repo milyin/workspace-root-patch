@@ -65,11 +65,10 @@ fn real_main() -> Result<()> {
 }
 
 fn install(input: &Path) -> Result<()> {
-    let (workspace_root, workspace_manifest_path) =
-        resolve_workspace_root_and_manifest_or_create(input)?;
+    let (ws_root, ws_manifest_path) = resolve_workspace_root_and_manifest_or_create(input)?;
 
     // 1) Ensure destination crate directory
-    let local_crate_dir = workspace_root.join("workspace-root-patch");
+    let local_crate_dir = ws_root.join("workspace-root-patch");
     if local_crate_dir.exists() {
         // If exists, ensure it's a directory and has src/. If not, bail to avoid clobbering.
         if !local_crate_dir.is_dir() {
@@ -97,9 +96,6 @@ license = "MIT OR Apache-2.0"
 description = "Utility to expose the workspace project root at build time"
 publish = false
 
-[lib]
-name = "workspace_root"
-
 [build-dependencies]
 project-root = "0.2"
 quote = "1"
@@ -120,12 +116,12 @@ quote = "1"
         .with_context(|| format!("writing {}", local_crate_dir.join("build.rs").display()))?;
 
     // 4) Update workspace Cargo.toml: add member and [patch.crates-io]
-    add_member_and_patch(&workspace_manifest_path, &local_crate_dir)?;
+    add_member_and_patch(&ws_manifest_path, &local_crate_dir)?;
 
     println!(
         "Installed local 'workspace-root-patch' crate at: {}\nUpdated workspace at: {}",
         local_crate_dir.display(),
-        workspace_manifest_path.display()
+        ws_manifest_path.display()
     );
     Ok(())
 }
@@ -154,19 +150,19 @@ fn resolve_workspace_root_and_manifest_or_create(input: &Path) -> Result<(PathBu
 
     // Case 1: user passed a workspace Cargo.toml directly
     if doc.contains_key("workspace") {
-        let workspace_root = p
+        let ws_root = p
             .parent()
             .ok_or_else(|| anyhow!("manifest has no parent: {}", p.display()))?
             .to_path_buf();
-        return Ok((workspace_root, p));
+        return Ok((ws_root, p));
     }
 
     // Case 2: user passed a crate (non-workspace) Cargo.toml
     if doc.contains_key("package") {
         // 2a: If it belongs to an ancestor workspace, use that workspace
         if let Some(ws_manifest) = find_ancestor_workspace_manifest(p.parent().unwrap())? {
-            let workspace_root = ws_manifest.parent().unwrap().to_path_buf();
-            return Ok((workspace_root, ws_manifest));
+            let ws_root = ws_manifest.parent().unwrap().to_path_buf();
+            return Ok((ws_root, ws_manifest));
         }
         // 2b: Standalone crate; create workspace here and include "."
         create_workspace_in_manifest(&p)?;

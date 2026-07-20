@@ -1,12 +1,43 @@
+//! Cargo utility for installing a workspace-local `project-root` proxy.
+//!
+//! Run `cargo project-root-patch install <path>` once in a consuming workspace.
+//! See the [README](https://github.com/milyin/project-root-patch#readme) for the
+//! generated layout and the crates.io-only vendoring procedure.
+
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use tempfile::TempDir;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 const GENERATED_MARKER: &str = ".project-root-patch-generated";
+const UPSTREAM_NAME: &str = "project-root";
+const UPSTREAM_VERSION: &str = "0.2.2";
+const VENDORED_DIR_NAME: &str = "project-root-0.2.2";
+
+const PROXY_BUILD_RS: &str = r#"#[path = "upstream/project-root-0.2.2/src/lib.rs"]
+mod upstream_project_root;
+
+fn main() {
+    let root = upstream_project_root::get_project_root()
+        .expect("failed to determine the consuming workspace root");
+    println!("cargo:rustc-env=PROJECT_ROOT={}", root.display());
+}
+"#;
+
+const PROXY_LIB_RS: &str = r#"use std::{io, path::PathBuf};
+
+/// Returns the absolute path to the consuming Cargo workspace root.
+pub fn get_project_root() -> io::Result<PathBuf> {
+    Ok(env!("PROJECT_ROOT").into())
+}
+"#;
 
 const USAGE: &str = "project-root-patch
 
@@ -16,16 +47,17 @@ Usage:
 
 Commands:
     help                 Show this help
-    install <path>       Inject project-root-patch into a Cargo workspace
+    install <path>       Inject a local project-root proxy into a Cargo workspace
 
 Details:
     <path> may be a package or workspace directory, or its Cargo.toml.
     A standalone package is converted into a workspace containing itself.
+    Installation vendors project-root 0.2.2 through Cargo's configured registry.
 ";
 
 fn main() {
     if let Err(err) = real_main() {
-        eprintln!("error: {:#}", err);
+        eprintln!("error: {err:#}");
         std::process::exit(1);
     }
 }
@@ -33,7 +65,7 @@ fn main() {
 fn real_main() -> Result<()> {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
 
-    if let Some(first) = args.first().map(|s| s.as_str()) {
+    if let Some(first) = args.first().map(String::as_str) {
         if matches!(first, "project-root-patch" | "cargo-project-root-patch") {
             let _ = args.remove(0);
         }
@@ -41,11 +73,11 @@ fn real_main() -> Result<()> {
 
     if args.is_empty()
         || matches!(
-            args.first().map(|s| s.as_str()),
+            args.first().map(String::as_str),
             Some("help" | "-h" | "--help")
         )
     {
-        println!("{}", USAGE);
+        println!("{USAGE}");
         return Ok(());
     }
 
@@ -64,68 +96,163 @@ fn real_main() -> Result<()> {
             }
             install(Path::new(&args[0]))
         }
-        other => bail!("unknown command: {}\n\n{}", other, USAGE),
+        other => bail!("unknown command: {other}\n\n{USAGE}"),
     }
 }
 
 fn install(input: &Path) -> Result<()> {
     let workspace = resolve_workspace(input)?;
-    let local_crate_dir = workspace.root.join("project-root-patch");
+    let proxy_dir = workspace.root.join("project-root-patch");
 
-    validate_destination(&local_crate_dir)?;
-    let workspace_manifest = render_workspace_manifest(
-        &workspace.manifest,
-        &local_crate_dir,
-        workspace.add_root_package,
-    )?;
+    validate_destination(&proxy_dir)?;
+    let workspace_manifest =
+        render_workspace_manifest(&workspace.manifest, &proxy_dir, workspace.add_root_package)?;
+    let upstream_dir = proxy_dir.join("upstream").join(VENDORED_DIR_NAME);
+    let vendored = if valid_upstream_source(&upstream_dir) {
+        None
+    } else {
+        Some(vendor_upstream()?)
+    };
 
-    fs::create_dir_all(local_crate_dir.join("src"))
-        .with_context(|| format!("creating crate dir {}", local_crate_dir.display()))?;
+    fs::create_dir_all(proxy_dir.join("src"))
+        .with_context(|| format!("creating proxy directory {}", proxy_dir.display()))?;
 
-    let local_cargo = local_crate_dir.join("Cargo.toml");
-    let version = env!("CARGO_PKG_VERSION");
-    let cargo_toml = format!(
-        r#"[package]
-name = "project-root-patch"
-version = "{version}"
-edition = "2021"
-license = "MIT OR Apache-2.0"
-description = "Utility to expose the workspace project root at build time"
-publish = false
+    if let Some(vendored) = vendored {
+        let upstream_parent = proxy_dir.join("upstream");
+        if upstream_parent.exists() {
+            fs::remove_dir_all(&upstream_parent)
+                .with_context(|| format!("removing {}", upstream_parent.display()))?;
+        }
+        copy_dir_all(&vendored.source, &upstream_dir).with_context(|| {
+            format!(
+                "copying vendored {UPSTREAM_NAME} {UPSTREAM_VERSION} to {}",
+                upstream_dir.display()
+            )
+        })?;
+    }
 
-[build-dependencies]
-project-root = "0.2"
-"#
-    );
-    fs::write(&local_cargo, cargo_toml)
-        .with_context(|| format!("writing {}", local_cargo.display()))?;
-
-    let lib_rs = include_str!("./lib.rs");
-    let build_rs = include_str!("../build.rs");
-
-    fs::write(local_crate_dir.join("src/lib.rs"), lib_rs)
-        .with_context(|| format!("writing {}", local_crate_dir.join("src/lib.rs").display()))?;
-    fs::write(local_crate_dir.join("build.rs"), build_rs)
-        .with_context(|| format!("writing {}", local_crate_dir.join("build.rs").display()))?;
+    fs::write(proxy_dir.join("Cargo.toml"), proxy_manifest())
+        .with_context(|| format!("writing {}", proxy_dir.join("Cargo.toml").display()))?;
+    fs::write(proxy_dir.join("src/lib.rs"), PROXY_LIB_RS)
+        .with_context(|| format!("writing {}", proxy_dir.join("src/lib.rs").display()))?;
+    fs::write(proxy_dir.join("build.rs"), PROXY_BUILD_RS)
+        .with_context(|| format!("writing {}", proxy_dir.join("build.rs").display()))?;
     fs::write(
-        local_crate_dir.join(GENERATED_MARKER),
-        format!("generated by project-root-patch {version}\n"),
-    )
-    .with_context(|| {
+        proxy_dir.join(GENERATED_MARKER),
         format!(
-            "writing {}",
-            local_crate_dir.join(GENERATED_MARKER).display()
-        )
-    })?;
+            "generated by project-root-patch {}; upstream {UPSTREAM_NAME} {UPSTREAM_VERSION}\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .with_context(|| format!("writing {}", proxy_dir.join(GENERATED_MARKER).display()))?;
 
     fs::write(&workspace.manifest, workspace_manifest)
         .with_context(|| format!("writing {}", workspace.manifest.display()))?;
 
     println!(
-        "Installed local 'project-root-patch' crate at: {}\nUpdated workspace at: {}",
-        local_crate_dir.display(),
+        "Installed local '{UPSTREAM_NAME}' proxy at: {}\nUsing vendored {UPSTREAM_NAME} {UPSTREAM_VERSION}\nUpdated workspace at: {}",
+        proxy_dir.display(),
         workspace.manifest.display()
     );
+    Ok(())
+}
+
+fn valid_upstream_source(source: &Path) -> bool {
+    source.join("Cargo.toml").is_file()
+        && source.join("src/lib.rs").is_file()
+        && source.join(".cargo-checksum.json").is_file()
+}
+
+fn proxy_manifest() -> String {
+    format!(
+        r#"[package]
+name = "project-root"
+version = "{UPSTREAM_VERSION}"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Workspace-local proxy generated by project-root-patch"
+publish = false
+"#
+    )
+}
+
+struct VendoredUpstream {
+    _temp: TempDir,
+    source: PathBuf,
+}
+
+fn vendor_upstream() -> Result<VendoredUpstream> {
+    let temp = tempfile::Builder::new()
+        .prefix("project-root-patch-vendor-")
+        .tempdir()
+        .context("creating temporary vendor directory")?;
+    let manifest = temp.path().join("Cargo.toml");
+    let placeholder = temp.path().join("lib.rs");
+    fs::write(&placeholder, "").with_context(|| format!("writing {}", placeholder.display()))?;
+    fs::write(
+        &manifest,
+        format!(
+            r#"[package]
+name = "project-root-patch-vendor"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+project-root = "={UPSTREAM_VERSION}"
+
+[workspace]
+"#
+        ),
+    )
+    .with_context(|| format!("writing {}", manifest.display()))?;
+
+    let vendor_dir = temp.path().join("vendor");
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let output = Command::new(cargo)
+        .arg("vendor")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--versioned-dirs")
+        .arg(&vendor_dir)
+        .output()
+        .context("running cargo vendor")?;
+    if !output.status.success() {
+        bail!(
+            "cargo vendor failed:\n{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let source = vendor_dir.join(VENDORED_DIR_NAME);
+    if !source.join("Cargo.toml").is_file() || !source.join("src/lib.rs").is_file() {
+        bail!(
+            "cargo vendor did not produce the expected source directory: {}",
+            source.display()
+        );
+    }
+
+    Ok(VendoredUpstream {
+        _temp: temp,
+        source,
+    })
+}
+
+fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_all(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(source_path, destination_path)?;
+        }
+    }
     Ok(())
 }
 
@@ -136,153 +263,164 @@ struct Workspace {
 }
 
 fn resolve_workspace(input: &Path) -> Result<Workspace> {
-    let p = if input.is_dir() {
+    let manifest = if input.is_dir() {
         input.join("Cargo.toml")
     } else {
         input.to_path_buf()
     };
-    if !p.exists() {
-        bail!("Path does not exist: {}", p.display());
+    if !manifest.exists() {
+        bail!("path does not exist: {}", manifest.display());
     }
-    if p.is_dir() {
+    if manifest.is_dir() {
         bail!(
-            "Expected a Cargo.toml file or a directory containing one: {}",
-            p.display()
+            "expected a Cargo.toml file or a directory containing one: {}",
+            manifest.display()
         );
     }
 
-    let text = fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+    let text =
+        fs::read_to_string(&manifest).with_context(|| format!("reading {}", manifest.display()))?;
     let doc: DocumentMut = text
         .parse()
-        .with_context(|| format!("parsing TOML at {}", p.display()))?;
+        .with_context(|| format!("parsing TOML at {}", manifest.display()))?;
 
     if doc.contains_key("workspace") {
-        let root = p
+        let root = manifest
             .parent()
-            .ok_or_else(|| anyhow!("manifest has no parent: {}", p.display()))?
+            .ok_or_else(|| anyhow!("manifest has no parent: {}", manifest.display()))?
             .to_path_buf();
         return Ok(Workspace {
             root,
-            manifest: p,
+            manifest,
             add_root_package: false,
         });
     }
 
     if doc.contains_key("package") {
-        if let Some(ws_manifest) = find_ancestor_workspace_manifest(p.parent().unwrap())? {
+        if let Some(workspace_manifest) =
+            find_ancestor_workspace_manifest(manifest.parent().unwrap())?
+        {
             return Ok(Workspace {
-                root: ws_manifest.parent().unwrap().to_path_buf(),
-                manifest: ws_manifest,
+                root: workspace_manifest.parent().unwrap().to_path_buf(),
+                manifest: workspace_manifest,
                 add_root_package: false,
             });
         }
         return Ok(Workspace {
-            root: p.parent().unwrap().to_path_buf(),
-            manifest: p,
+            root: manifest.parent().unwrap().to_path_buf(),
+            manifest,
             add_root_package: true,
         });
     }
 
     bail!(
         "{} is not a valid Cargo manifest (neither [workspace] nor [package] found)",
-        p.display()
+        manifest.display()
     )
 }
 
-fn validate_destination(local_crate_dir: &Path) -> Result<()> {
-    if !local_crate_dir.exists() {
+fn validate_destination(proxy_dir: &Path) -> Result<()> {
+    if !proxy_dir.exists() {
         return Ok(());
     }
-    if !local_crate_dir.is_dir() {
+    if !proxy_dir.is_dir() {
         bail!(
             "target path exists and is not a directory: {}",
-            local_crate_dir.display()
+            proxy_dir.display()
         );
     }
-    if !local_crate_dir.join(GENERATED_MARKER).is_file() {
+    if !proxy_dir.join(GENERATED_MARKER).is_file() {
         bail!(
             "refusing to overwrite unrecognized directory: {}\n\
              Move or remove it after verifying its contents, then run the command again.",
-            local_crate_dir.display()
+            proxy_dir.display()
         );
     }
     Ok(())
 }
 
 fn find_ancestor_workspace_manifest(start_dir: &Path) -> Result<Option<PathBuf>> {
-    let mut cur = Some(start_dir);
-    while let Some(dir) = cur {
-        let cand = dir.join("Cargo.toml");
-        if cand.exists() {
-            let text =
-                fs::read_to_string(&cand).with_context(|| format!("reading {}", cand.display()))?;
+    let mut current = Some(start_dir);
+    while let Some(dir) = current {
+        let candidate = dir.join("Cargo.toml");
+        if candidate.exists() {
+            let text = fs::read_to_string(&candidate)
+                .with_context(|| format!("reading {}", candidate.display()))?;
             let doc: DocumentMut = match text.parse() {
-                Ok(d) => d,
+                Ok(document) => document,
                 Err(_) => {
-                    // Not valid TOML; skip
-                    cur = dir.parent();
+                    current = dir.parent();
                     continue;
                 }
             };
             if doc.contains_key("workspace") {
-                return Ok(Some(cand));
+                return Ok(Some(candidate));
             }
         }
-        cur = dir.parent();
+        current = dir.parent();
     }
     Ok(None)
 }
 
 fn render_workspace_manifest(
-    ws_manifest_path: &Path,
-    local_crate_dir: &Path,
+    workspace_manifest: &Path,
+    proxy_dir: &Path,
     add_root_package: bool,
 ) -> Result<String> {
-    let text = fs::read_to_string(ws_manifest_path)
-        .with_context(|| format!("reading {}", ws_manifest_path.display()))?;
+    let text = fs::read_to_string(workspace_manifest)
+        .with_context(|| format!("reading {}", workspace_manifest.display()))?;
     let mut doc: DocumentMut = text
         .parse()
-        .with_context(|| format!("parsing TOML at {}", ws_manifest_path.display()))?;
+        .with_context(|| format!("parsing TOML at {}", workspace_manifest.display()))?;
 
-    let ws = doc["workspace"].or_insert(Item::Table(Table::new()));
-    let ws_tbl = ws
+    let workspace = doc["workspace"].or_insert(Item::Table(Table::new()));
+    let workspace = workspace
         .as_table_mut()
         .ok_or_else(|| anyhow!("[workspace] must be a TOML table"))?;
 
-    let members = ws_tbl
+    let members = workspace
         .entry("members")
-        .or_insert(Item::Value(Value::Array(Array::default())));
-    let members = members
+        .or_insert(Item::Value(Value::Array(Array::default())))
         .as_array_mut()
         .ok_or_else(|| anyhow!("workspace.members must be an array"))?;
-    if add_root_package && !members.iter().any(|value| value.as_str() == Some(".")) {
+    if add_root_package && !contains(members, ".") {
         members.push(".");
     }
-    if !members
-        .iter()
-        .any(|value| value.as_str() == Some("project-root-patch"))
-    {
+    if !contains(members, "project-root-patch") {
         members.push("project-root-patch");
     }
 
+    let excluded_upstream = format!("project-root-patch/upstream/{VENDORED_DIR_NAME}");
+    let exclude = workspace
+        .entry("exclude")
+        .or_insert(Item::Value(Value::Array(Array::default())))
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("workspace.exclude must be an array"))?;
+    if !contains(exclude, &excluded_upstream) {
+        exclude.push(excluded_upstream);
+    }
+
     let patch = doc["patch"].or_insert(Item::Table(Table::new()));
-    let patch_tbl = patch
+    let patch = patch
         .as_table_mut()
         .ok_or_else(|| anyhow!("[patch] must be a TOML table"))?;
-    let crates_io = patch_tbl
+    let crates_io = patch
         .entry("crates-io")
-        .or_insert(Item::Table(Table::new()));
-    let crates_io_tbl = crates_io
+        .or_insert(Item::Table(Table::new()))
         .as_table_mut()
         .ok_or_else(|| anyhow!("[patch.crates-io] must be a TOML table"))?;
 
-    let rel_path = pathdiff::diff_paths(local_crate_dir, ws_manifest_path.parent().unwrap())
-        .unwrap_or_else(|| local_crate_dir.to_path_buf());
-    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-
+    crates_io.remove("project-root-patch");
+    let relative_proxy = pathdiff::diff_paths(proxy_dir, workspace_manifest.parent().unwrap())
+        .unwrap_or_else(|| proxy_dir.to_path_buf());
+    let relative_proxy = relative_proxy.to_string_lossy().replace('\\', "/");
     let mut path_table = Table::new();
-    path_table.insert("path", toml_edit::value(rel_str));
-    crates_io_tbl.insert("project-root-patch", Item::Table(path_table));
+    path_table.insert("path", toml_edit::value(relative_proxy));
+    crates_io.insert(UPSTREAM_NAME, Item::Table(path_table));
 
     Ok(doc.to_string())
+}
+
+fn contains(array: &Array, expected: &str) -> bool {
+    array.iter().any(|value| value.as_str() == Some(expected))
 }

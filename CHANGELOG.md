@@ -11,8 +11,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- `project_root_patch::get_project_root()` for external build scripts.
-- `cargo project-root-patch install` for injecting a workspace-local helper.
+- `cargo project-root-patch install` for injecting a workspace-local
+  `project-root` proxy.
+- One-time vendoring of the original `project-root` 0.2.2 source through Cargo's
+  configured crates.io registry.
 - Safe, repeatable workspace manifest patching.
 - CI-based crates.io publication and trusted-publishing migration instructions.
 

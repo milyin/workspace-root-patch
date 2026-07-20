@@ -27,7 +27,7 @@ fn make_tmp(prefix: &str) -> (TempDir, PathBuf) {
 fn create_fixture(tmp_root: &Path, fixture: &str) -> PathBuf {
     let root = tmp_root.join(fixture);
     let program = r#"fn main() {
-    println!("{}", project_root_patch::get_project_root().display());
+    println!("{}", project_root::get_project_root().unwrap().display());
 }
 "#;
 
@@ -42,7 +42,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-project-root-patch = "*"
+project-root = "=0.2.2"
 "#,
             )
             .expect("write package manifest");
@@ -60,7 +60,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-project-root-patch = "*"
+project-root = "=0.2.2"
 "#,
             )
             .expect("write workspace package manifest");
@@ -82,7 +82,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-project-root-patch = "*"
+project-root = "=0.2.2"
 "#,
             )
             .expect("write member manifest");
@@ -102,6 +102,33 @@ fn run_install(manifest: &Path) {
         .arg(manifest)
         .assert()
         .success();
+}
+
+fn run_reinstall_without_cargo(manifest: &Path) {
+    Command::new(cargo_bin("cargo-project-root-patch"))
+        .arg("install")
+        .arg(manifest)
+        .env("CARGO", "cargo-must-not-be-called-during-reinstall")
+        .assert()
+        .success();
+}
+
+fn generate_registry_lockfile(workspace: &Path) {
+    let output = Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(workspace)
+        .output()
+        .expect("run cargo generate-lockfile");
+    assert!(
+        output.status.success(),
+        "cargo generate-lockfile failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lockfile = fs::read_to_string(workspace.join("Cargo.lock")).expect("read Cargo.lock");
+    assert!(
+        lockfile.contains("registry+https://github.com/rust-lang/crates.io-index"),
+        "pre-install lockfile should resolve project-root from crates.io"
+    );
 }
 
 fn read_manifest_doc(manifest: &Path) -> DocumentMut {
@@ -131,17 +158,14 @@ fn assert_helper_patch(doc: &DocumentMut) {
         .as_table()
         .expect("patch.crates-io table");
     let helper = patch_tbl
-        .get("project-root-patch")
+        .get("project-root")
         .expect("patch entry for helper crate");
     let helper_tbl = helper.as_table().expect("helper patch table");
     let path_value = helper_tbl
         .get("path")
         .and_then(|i| i.as_str())
         .expect("path value");
-    eprintln!(
-        "[test] patch crates-io.project-root-patch.path = {}",
-        path_value
-    );
+    eprintln!("[test] patch crates-io.project-root.path = {}", path_value);
     assert!(
         path_value.contains("project-root-patch"),
         "path should reference 'project-root-patch'"
@@ -167,6 +191,24 @@ fn assert_helper_files_exist(base_dir: &Path) {
             .join(".project-root-patch-generated")
             .exists(),
         "generated marker should exist"
+    );
+    let helper_manifest = read_manifest_doc(&local_helper_dir.join("Cargo.toml"));
+    assert_eq!(
+        helper_manifest["package"]["name"].as_str(),
+        Some("project-root")
+    );
+    assert_eq!(
+        helper_manifest["package"]["version"].as_str(),
+        Some("0.2.2")
+    );
+    let upstream = local_helper_dir.join("upstream").join("project-root-0.2.2");
+    assert!(
+        upstream.join("src/lib.rs").is_file(),
+        "vendored upstream source should exist"
+    );
+    assert!(
+        upstream.join(".cargo-checksum.json").is_file(),
+        "vendored upstream checksum should exist"
     );
 }
 
@@ -215,6 +257,21 @@ fn cargo_run_and_assert_workspace(dir: &Path, pkg: Option<&str>) {
         actual, expected,
         "printed workspace root does not match expected"
     );
+
+    let mut locked = Command::new("cargo");
+    locked.args(["check", "--quiet", "--offline", "--locked"]);
+    if let Some(package) = pkg {
+        locked.arg("-p").arg(package);
+    }
+    let output = locked
+        .current_dir(dir)
+        .output()
+        .expect("failed to execute locked cargo check");
+    assert!(
+        output.status.success(),
+        "locked cargo check failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -227,6 +284,11 @@ fn installs_into_standalone_crate() {
 
     let doc: DocumentMut = read_manifest_doc(&manifest);
     assert_workspace_members(&doc, &[".", "project-root-patch"]);
+    assert!(doc["workspace"]["exclude"]
+        .as_array()
+        .expect("exclude array")
+        .iter()
+        .any(|value| value.as_str() == Some("project-root-patch/upstream/project-root-0.2.2")));
     assert_helper_patch(&doc);
     assert_helper_files_exist(&dst_pkg);
 
@@ -243,7 +305,7 @@ fn reinstall_is_idempotent() {
     let manifest = dst_pkg.join("Cargo.toml");
 
     run_install(&manifest);
-    run_install(&manifest);
+    run_reinstall_without_cargo(&manifest);
 
     let doc = read_manifest_doc(&manifest);
     let members = doc["workspace"]["members"]
@@ -306,6 +368,7 @@ fn installs_into_existing_workspace() {
     let dst_ws = create_fixture(&tmp_root, "workspace-package");
     let ws_manifest = dst_ws.join("Cargo.toml");
 
+    generate_registry_lockfile(&dst_ws);
     run_install(&ws_manifest);
 
     let doc: DocumentMut = read_manifest_doc(&ws_manifest);
@@ -315,6 +378,11 @@ fn installs_into_existing_workspace() {
 
     // Running the workspace member should print the workspace root path (the workspace dir)
     cargo_run_and_assert_workspace(&dst_ws, Some("simple_member"));
+    let lockfile = fs::read_to_string(dst_ws.join("Cargo.lock")).expect("read updated Cargo.lock");
+    assert!(
+        !lockfile.contains("git+"),
+        "installed proxy must not introduce a Git source"
+    );
 
     maybe_keep_tmp(tmp);
 }

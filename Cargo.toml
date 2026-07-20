@@ -5,8 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Michael Ilyin <milyin@gmail.com>"]
 repository = "https://github.com/milyin/project-root-patch"
-description = "Expose a consuming Cargo workspace root to external build scripts"
-documentation = "https://docs.rs/project-root-patch"
+description = "Patch project-root so external crates can find the consuming Cargo workspace"
 keywords = ["cargo", "workspace", "build-script", "reflection"]
 categories = ["development-tools::cargo-plugins"]
 rust-version = "1.85"
@@ -15,7 +14,6 @@ publish = ["crates-io"]
 include = [
     "/src/**",
     "/tests/**",
-    "/build.rs",
     "/Cargo.lock",
     "/README.md",
     "/RELEASING.md",
@@ -24,17 +22,11 @@ include = [
     "/LICENSE-MIT",
 ]
 
-[lib]
-name = "project_root_patch"
-path = "src/lib.rs"
-
-[build-dependencies]
-project-root = "0.2"
-
 [dependencies]
 anyhow = "1"
 toml_edit = "0.22"
 pathdiff = "0.2"
+tempfile = "3"
 
 [[bin]]
 name = "cargo-project-root-patch"
@@ -43,4 +35,3 @@ path = "src/main.rs"
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"
